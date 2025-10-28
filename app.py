@@ -97,13 +97,14 @@ def due_status(t: dict, nowt: datetime) -> str:
         return f"⏳ In {mins} min"
 
 def live_utc_clock():
-    # Renders a client-side live UTC clock (no reruns needed)
-    st.markdown(
+    # Render a live UTC clock via a component (scripts are fully allowed here)
+    st.components.v1.html(
         """
         <div style="display:flex;justify-content:flex-end;">
-          <div id="utc-clock" style="text-align:right;font-variant-numeric:tabular-nums;">
-              <span style="opacity:.7;margin-right:.5rem;">UTC</span>
-              <strong id="utc-time">--:--:--</strong>
+          <div style="font:600 16px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+                      font-variant-numeric: tabular-nums; letter-spacing: .5px;">
+            <span style="opacity:.7;margin-right:.5rem;">UTC</span>
+            <strong id="utc-time">--:--:--</strong>
           </div>
         </div>
         <script>
@@ -116,16 +117,15 @@ def live_utc_clock():
             const hh = pad(d.getUTCHours());
             const mm = pad(d.getUTCMinutes());
             const ss = pad(d.getUTCSeconds());
-            const s = `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
-            const el = document.getElementById("utc-time");
-            if (el) el.textContent = s;
+            document.getElementById("utc-time").textContent = `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
           }
           tick();
           setInterval(tick, 1000);
         </script>
         """,
-        unsafe_allow_html=True,
+        height=36,
     )
+
 
 def play_beep_web_audio():
     """Use Web Audio API to generate a short beep—reliable across browsers once tab is interacted with."""
