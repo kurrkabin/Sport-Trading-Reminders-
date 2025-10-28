@@ -20,7 +20,7 @@ SPORTS = [
 
 DATA_PATH = Path("tasks.json")
 
-# Invisible auto-check cadence (milliseconds). Default: 5 minutes.
+# Server-side background check cadence (ms). Keep at 5 minutes as requested.
 AUTO_REFRESH_MS = 300_000
 
 # --------------------------- Helpers ---------------------------
@@ -47,6 +47,8 @@ def save_tasks(tasks: list[dict]) -> None:
 def ensure_state():
     if "tasks" not in st.session_state:
         st.session_state.tasks = load_tasks()
+    if "sound_enabled" not in st.session_state:
+        st.session_state.sound_enabled = False
 
 def add_task(sport: str, txt: str, dt_utc: datetime):
     t = {
@@ -96,58 +98,120 @@ def due_status(t: dict, nowt: datetime) -> str:
         mins = int((when - nowt).total_seconds() // 60)
         return f"⏳ In {mins} min"
 
+# --------------------------- UI: UTC live clock ---------------------------
 def live_utc_clock():
-    # Render a live UTC clock via a component (scripts are fully allowed here)
+    # Proper component so scripts always run
     st.components.v1.html(
         """
-        <div style="display:flex;justify-content:flex-end;">
-          <div style="font:600 16px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-                      font-variant-numeric: tabular-nums; letter-spacing: .5px;">
-            <span style="opacity:.7;margin-right:.5rem;">UTC</span>
+        <div style="display:flex;justify-content:flex-end;margin-bottom:.25rem">
+          <div style="font:600 16px/1.2 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+                      font-variant-numeric:tabular-nums;letter-spacing:.5px">
+            <span style="opacity:.7;margin-right:.4rem;">UTC</span>
             <strong id="utc-time">--:--:--</strong>
           </div>
         </div>
         <script>
           function pad(n){return n.toString().padStart(2,'0');}
           function tick(){
-            const d = new Date();
-            const y = d.getUTCFullYear();
-            const m = pad(d.getUTCMonth()+1);
-            const day = pad(d.getUTCDate());
-            const hh = pad(d.getUTCHours());
-            const mm = pad(d.getUTCMinutes());
-            const ss = pad(d.getUTCSeconds());
-            document.getElementById("utc-time").textContent = `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+            const d=new Date();
+            const s=`${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} `+
+                    `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+            const el=document.getElementById("utc-time");
+            if(el) el.textContent=s;
           }
-          tick();
-          setInterval(tick, 1000);
+          tick(); setInterval(tick,1000);
         </script>
         """,
-        height=36,
+        height=28,
     )
 
+# --------------------------- UI: Sound priming & alarm ---------------------------
+def sound_enable_banner():
+    """
+    One-time button to grant audio permission and keep the audio context alive
+    (auto-resume on visibility changes so background alarms work).
+    """
+    clicked = st.button("🔊 Enable sound (one-time)", help="Click once at the start of your shift.")
+    if clicked:
+        st.session_state.sound_enabled = True
 
-def play_beep_web_audio():
-    """Use Web Audio API to generate a short beep—reliable across browsers once tab is interacted with."""
+    if st.session_state.sound_enabled:
+        st.success("Sound enabled for background alarms.")
+        st.components.v1.html(
+            """
+            <script>
+              (function(){
+                try {
+                  const Ctor = window.AudioContext || window.webkitAudioContext;
+                  const ctx = new Ctor();
+                  // Keep-alive: resume periodically & on visibility change
+                  function ensureResume(){
+                    if (ctx.state === 'suspended') { ctx.resume(); }
+                  }
+                  ensureResume();
+                  setInterval(ensureResume, 15000);
+                  document.addEventListener('visibilitychange', ensureResume);
+                  window._alarmCtx = ctx;
+                } catch(e) { console.log('Audio init error', e); }
+              })();
+            </script>
+            """,
+            height=0,
+        )
+
+def play_long_alarm():
+    """
+    6-second pulsing dual-tone (880Hz + 660Hz) with tremolo—noticeable, even in background.
+    Requires sound to be enabled earlier.
+    """
+    if not st.session_state.get("sound_enabled"):
+        return
     st.components.v1.html(
         """
         <script>
-          (function() {
+          (function(){
             try {
-              const ctx = new (window.AudioContext || window.webkitAudioContext)();
-              const osc = ctx.createOscillator();
-              const gain = ctx.createGain();
-              osc.type = 'sine';
-              osc.frequency.value = 880; // A5
-              osc.connect(gain);
-              gain.connect(ctx.destination);
-              gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-              gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.01);
-              osc.start();
-              gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
-              osc.stop(ctx.currentTime + 0.27);
+              const Ctor = window.AudioContext || window.webkitAudioContext;
+              const ctx = window._alarmCtx || new Ctor();
               if (ctx.state === 'suspended') { ctx.resume(); }
-            } catch(e) { console.log('Beep error:', e); }
+
+              const osc1 = ctx.createOscillator(); // 880 Hz
+              const osc2 = ctx.createOscillator(); // 660 Hz
+              const gain = ctx.createGain();       // master
+              const trem = ctx.createOscillator(); // amplitude modulation
+              const tremGain = ctx.createGain();
+
+              osc1.type = 'square';
+              osc2.type = 'square';
+              osc1.frequency.value = 880;
+              osc2.frequency.value = 660;
+
+              gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+
+              // Tremolo ~6 Hz for "urgent" feel
+              trem.frequency.value = 6;
+              tremGain.gain.value = 0.5;
+              trem.connect(tremGain);
+              tremGain.connect(gain.gain);
+
+              osc1.connect(gain);
+              osc2.connect(gain);
+              gain.connect(ctx.destination);
+
+              // Fade in quickly, play 6 seconds, fade out
+              const t0 = ctx.currentTime + 0.01;
+              gain.gain.exponentialRampToValueAtTime(0.6, t0 + 0.05);
+
+              osc1.start(t0);
+              osc2.start(t0 + 0.02);
+              trem.start(t0);
+
+              const tEnd = t0 + 6.0;
+              gain.gain.exponentialRampToValueAtTime(0.0001, tEnd - 0.1);
+              osc1.stop(tEnd);
+              osc2.stop(tEnd);
+              trem.stop(tEnd);
+            } catch(e) { console.log('Alarm error', e); }
           })();
         </script>
         """,
@@ -159,19 +223,22 @@ ensure_state()
 
 st.title("⏰ Sport Trading Reminders (UTC)")
 
-# Top-right: live UTC clock. No refresh UI.
+# Live UTC clock (always visible, 1s updates)
 live_utc_clock()
 
-# Invisible server-side auto-check every 5 minutes (no visible widget)
+# One-time sound enable (do this once at the start of your shift)
+sound_enable_banner()
+
+# Silent server-side auto-check every 5 minutes
 try:
     from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=AUTO_REFRESH_MS, key="auto_refresh_5m", limit=None)
+    st_autorefresh(interval=AUTO_REFRESH_MS, key="auto_check_5m")
 except Exception:
-    pass  # If the helper isn't installed, the app still works; you'll interact occasionally.
+    pass
 
 st.markdown("---")
 
-# Adders per sport
+# Add reminders
 st.subheader("Add reminders (UTC)")
 today_utc = now_utc().date()
 for sport in SPORTS:
@@ -185,16 +252,14 @@ for sport in SPORTS:
                 f"Time (UTC) – {sport}",
                 value=time(0, 0),
                 key=f"{sport}_time",
-                step=timedelta(minutes=5),  # 5-minute increments
+                step=timedelta(minutes=5),
             )
-
         with c3:
             txt = st.text_input(
                 f"Action / note – {sport}",
                 placeholder="e.g., goes live; freeze groups; freeze main market; settle score; trade live…",
                 key=f"{sport}_text",
             )
-
         with c4:
             if st.button("Add", key=f"{sport}_add"):
                 if txt.strip():
@@ -209,18 +274,17 @@ st.markdown("---")
 # Boards
 nowt = now_utc()
 tasks_sorted = sorted(st.session_state.tasks, key=lambda t: (parse_iso(t["when_utc"]), t["sport"]))
-
 due_tasks = [t for t in tasks_sorted if (not t["done"]) and nowt >= parse_iso(t["when_utc"])]
 upcoming_tasks = [t for t in tasks_sorted if (not t["done"]) and nowt < parse_iso(t["when_utc"])]
 done_tasks = [t for t in tasks_sorted if t["done"]]
 
-# Fire a beep exactly when we see newly-due, unalerted tasks
+# Play long alarm for newly-due items (only once per item)
 newly_due = [t for t in due_tasks if not t.get("alerted", False)]
 if newly_due:
     for t in newly_due:
         t["alerted"] = True
     save_tasks(st.session_state.tasks)
-    play_beep_web_audio()
+    play_long_alarm()
     st.toast(f"🔔 {len(newly_due)} reminder(s) due now", icon="🔔")
 
 st.subheader("🔔 Due now")
@@ -266,4 +330,6 @@ with st.expander("✔️ Completed"):
             st.write(f"• **{t['sport']}** — {t['text']}  _(scheduled {format_dt(when)})_")
 
 st.markdown("---")
-st.caption("Note: Some browsers require one click on the page before audio can play.")
+st.caption(
+    "For background alarms: click “Enable sound” once, keep this tab unmuted, and exclude it from any tab-sleep features."
+)
